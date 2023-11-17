@@ -1,250 +1,240 @@
-use image::{ImageBuffer, Rgba};
-use nalgebra as na;
-use wgpu::{Device, Queue, SwapChain, SwapChainDescriptor, Texture, TextureUsage, TextureView};
-use winit::{
-    event::{DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
-};
-
-const WIDTH: u32 = 800;
-const HEIGHT: u32 = 600;
+use std::ops::{Add, Sub, Mul};
+use image::{ImageBuffer, Rgb};
 
 #[derive(Clone, Copy)]
 struct Vec3 {
-    x: f32,
-    y: f32,
-    z: f32,
+    x: f64,
+    y: f64,
+    z: f64,
 }
 
-struct Triangle {
-    vertices: [Vec3; 3],
-    color: Rgba<u8>,
+impl Vec3 {
+    fn new(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+
+    fn unit_vector(v: Vec3) -> Vec3 {
+        v / v.length()
+    }
+
+    fn length(&self) -> f64 {
+        self.squared_length().sqrt()
+    }
+
+    fn squared_length(&self) -> f64 {
+        self.x * self.x + self.y * self.y + self.z * self.z
+    }
+    fn dot(&self, rhs: Vec3) -> f64 {
+        self.x * rhs.x + self.y * rhs.y + self.z * rhs.z
+    }
 }
 
-impl Triangle {
-    fn new(v1: Vec3, v2: Vec3, v3: Vec3, color: Rgba<u8>) -> Triangle {
-        Triangle {
-            vertices: [v1, v2, v3],
-            color,
+
+
+impl Add for Vec3 {
+    type Output = Vec3;
+
+    fn add(self, rhs: Vec3) -> Vec3 {
+        Vec3 {
+            x: self.x + rhs.x,
+            y: self.y + rhs.y,
+            z: self.z + rhs.z,
         }
     }
+}
+
+impl Sub for Vec3 {
+    type Output = Vec3;
+
+    fn sub(self, rhs: Vec3) -> Vec3 {
+        Vec3 {
+            x: self.x - rhs.x,
+            y: self.y - rhs.y,
+            z: self.z - rhs.z,
+        }
+    }
+}
+
+impl Mul<f64> for Vec3 {
+    type Output = Vec3;
+
+    fn mul(self, t: f64) -> Vec3 {
+        Vec3 {
+            x: self.x * t,
+            y: self.y * t,
+            z: self.z * t,
+        }
+    }
+}
+
+impl Mul<Vec3> for f64 {
+    type Output = Vec3;
+
+    fn mul(self, vec: Vec3) -> Vec3 {
+        Vec3 {
+            x: self * vec.x,
+            y: self * vec.y,
+            z: self * vec.z,
+        }
+    }
+}
+use std::ops::Div;
+impl Div<f64> for Vec3 {
+    type Output = Vec3;
+
+    fn div(self, t: f64) -> Vec3 {
+        (1.0 / t) * self
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Ray {
+    origin: Vec3,
+    direction: Vec3,
+}
+
+impl Ray {
+    fn new(origin: Vec3, direction: Vec3) -> Ray {
+        Ray { origin, direction }
+    }
+
+    fn at(&self, t: f64) -> Vec3 {
+        self.origin + t * self.direction
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Sphere {
+    center: Vec3,
+    radius: f64,
+}
+
+impl Sphere {
+    fn hit(&self, ray: &Ray) -> Option<f64> {
+        let oc = ray.origin - self.center;
+        let a = ray.direction.squared_length();
+        let b = 2.0 * oc.dot(ray.direction);
+        let c = oc.squared_length() - self.radius * self.radius;
+        let discriminant = b * b - 4.0 * a * c;
+
+        if discriminant > 0.0 {
+            // Ray hits the sphere
+            let t1 = (-b - discriminant.sqrt()) / (2.0 * a);
+            let t2 = (-b + discriminant.sqrt()) / (2.0 * a);
+            if t1 > 0.0 || t2 > 0.0 {
+                // Return the minimum positive solution
+                Some(t1.min(t2))
+            } else {
+                // Both solutions are negative
+                None
+            }
+        } else {
+            // Ray does not hit the sphere
+            None
+        }
+    }
+}
+
+
+fn hit_sphere<'a>(world: &'a [Sphere], ray: &'a Ray) -> Option<(f64, &'a Sphere)> {
+    let mut closest_t = f64::INFINITY;
+    let mut hit_sphere: Option<&'a Sphere> = None;
+
+    for sphere in world {
+        if let Some(t) = sphere.hit(ray) {
+            if t < closest_t {
+                closest_t = t;
+                hit_sphere = Some(sphere);
+            }
+        }
+    }
+
+    hit_sphere.map(|sphere| (closest_t, sphere))
+}
+
+fn ray_color(ray: &Ray, world: &[Sphere]) -> Vec3 {
+    if let Some((t, sphere)) = hit_sphere(world, ray) {
+        let hit_point = ray.at(t);
+        let normal = Vec3::unit_vector(hit_point - sphere.center);
+        return 0.5 * (normal + Vec3::new(1.0, 1.0, 1.0));
+    }
+
+    // Background color
+    Vec3::new(0.0, 0.0, 0.0)
 }
 
 fn main() {
-    let event_loop = EventLoop::new();
-    let window = WindowBuilder::new()
-        .with_title("Interactive Triangle Rotation")
-        .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64))
-        .build(&event_loop)
-        .unwrap();
+    // Example usage
+    let width = 200;
+    let height = 100;
 
-    let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
-    let (device, queue) = futures::executor::block_on(async {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::Default,
-                compatible_surface: None,
-            })
-            .await
-            .unwrap();
-        adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::default(),
-                },
-                None,
-            )
-            .await
-            .unwrap()
-    });
+    println!("Lets output an image of width {} pixels and height {} pixels", width, height);
 
-    let swap_chain_descriptor = SwapChainDescriptor {
-        usage: TextureUsage::RENDER_ATTACHMENT,
-        format: wgpu::TextureFormat::Bgra8UnormSrgb,
-        width: WIDTH,
-        height: HEIGHT,
-        present_mode: wgpu::PresentMode::Mailbox,
-    };
-    let swap_chain = device.create_swap_chain(&window, &swap_chain_descriptor);
+    let lower_left_corner = Vec3::new(-2.0, -1.0, -1.0);
+    let horizontal = Vec3::new(4.0, 0.0, 0.0);
+    let vertical = Vec3::new(0.0, 2.0, 0.0);
+    let origin = Vec3::new(0.0, 0.0, 0.0);
 
-    let mut rotation_angle = 0.0;
+    let world = vec![
+        Sphere {
+            center: Vec3::new(0.0, 0.0, -1.0),
+            radius: 0.5,
+        },
+        Sphere {
+            center: Vec3::new(0.0, -100.5, -1.0),
+            radius: 100.0,
+        }];
 
-    event_loop.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
 
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } => {
-                *control_flow = ControlFlow::Exit;
-            }
-            Event::DeviceEvent {
-                event:
-                DeviceEvent::Key(KeyboardInput {
-                                     state,
-                                     virtual_keycode: Some(VirtualKeyCode::Escape),
-                                     ..
-                                 }),
-                ..
-            }
-            | Event::WindowEvent {
-                event:
-                WindowEvent::KeyboardInput {
-                    input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        ..
-                    },
-                    ..
-                },
-                ..
-            } => {
-                if *state == ElementState::Pressed {
-                    *control_flow = ControlFlow::Exit;
-                }
-            }
-            Event::DeviceEvent {
-                event:
-                DeviceEvent::MouseWheel {
-                    delta,
-                    phase,
-                    ..
-                },
-                ..
-            } => {
-                if let winit::event::MouseScrollDelta::LineDelta(_, y) = delta {
-                    if *phase == winit::event::TouchPhase::Moved {
-                        rotation_angle += y;
-                        let rotated_triangle = rotate_triangle(rotation_angle);
-                        render(&device, &queue, &swap_chain, &rotated_triangle);
-                    }
-                }
-            }
-            Event::RedrawRequested(_) => {
-                let rotated_triangle = rotate_triangle(rotation_angle);
-                render(&device, &queue, &swap_chain, &rotated_triangle);
-            }
-            _ => (),
+  //  for j in (0..height).rev() {
+      //  for i in 0..width {
+          //  let u = i as f64 / (width - 1) as f64;
+          //  let v = j as f64 / (height - 1) as f64;
+
+            //let ray = Ray::new(
+             //   origin,
+             //   lower_left_corner + u * horizontal + v * vertical - origin,
+         //   );
+
+            //if let Some((t, sphere)) = hit_sphere(&world, &ray) {
+                //let hit_point = ray.at(t);
+                //let normal = Vec3::unit_vector(hit_point - sphere.center);
+                //let color = 0.5 * (normal + Vec3::new(1.0, 1.0, 1.0));
+
+
+                //println!("{} {} {}", ir, ig, ib);
+           // } //else {
+                // Background color
+               // println!("0 0 0");
+           // }
+     //   }
+ //   }
+    let image_width = 200;
+    let image_height = 100;
+
+    let mut img = ImageBuffer::new(image_width, image_height);
+
+    for j in (0..image_height).rev() {
+        for i in 0..image_width {
+            let u = i as f64 / (image_width - 1) as f64;
+            let v = j as f64 / (image_height - 1) as f64;
+
+            let ray = Ray::new(origin, lower_left_corner + u * horizontal + v * vertical - origin);
+
+            let color = ray_color(&ray, &world);
+
+            let ir = (255.999 * color.x) as u8;
+            let ig = (255.999 * color.y) as u8;
+            let ib = (255.999 * color.z) as u8;
+
+            img.put_pixel(i, j, Rgb([ir, ig, ib]));
         }
-    });
-}
-
-fn rotate_triangle(angle: f32) -> Triangle {
-    let triangle = Triangle::new(
-        Vec3 {
-            x: -0.5,
-            y: -0.5,
-            z: 0.0,
-        },
-        Vec3 {
-            x: 0.5,
-            y: -0.5,
-            z: 0.0,
-        },
-        Vec3 {
-            x: 0.0,
-            y: 0.5,
-            z: 0.0,
-        },
-        Rgba([255, 0, 0, 255]),
-    );
-
-    let mut rotated_vertices = triangle.vertices;
-
-    for vertex in rotated_vertices.iter_mut() {
-        let new_x = vertex.x * angle.cos() - vertex.z * angle.sin();
-        let new_z = vertex.x * angle.sin() + vertex.z * angle.cos();
-        vertex.x = new_x;
-        vertex.z = new_z;
     }
 
-    Triangle {
-        vertices: rotated_vertices,
-        color: triangle.color,
-    }
-}
+    img.save("araytrace.png").expect("Failed to save image");
 
-fn render(device: &Device, queue: &Queue, swap_chain: &SwapChain, triangle: &Triangle) {
-    let frame = swap_chain.get_next_texture().unwrap();
-    let output = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-    {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &[wgpu::RenderPassColorAttachment {
-                view: &output,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: true,
-                },
-            }],
-            depth_stencil_attachment: None,
-        });
 
-        // Render the triangle
-        let vertices: Vec<[f32; 3]> = triangle
-            .vertices
-            .iter()
-            .map(|v| [v.x, v.y, v.z])
-            .collect();
-        render_pass.set_vertex_buffer(0, device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsage::VERTEX,
-        }));
-
-        render_pass.set_pipeline(&device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-                    label: Some("Vertex Shader"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("vertex_shader.wgsl").into()),
-                    flags: wgpu::ShaderFlags::empty(),
-                }),
-                entry_point: "main",
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-                    label: Some("Fragment Shader"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("fragment_shader.wgsl").into()),
-                    flags: wgpu::ShaderFlags::empty(),
-                }),
-                entry_point: "main",
-                targets: &[wgpu::ColorTargetState {
-                    format: swap_chain_descriptor.format,
-                    alpha_blend: wgpu::BlendState::REPLACE,
-                    color_blend: wgpu::BlendState::REPLACE,
-                    write_mask: wgpu::ColorWrite::ALL,
-                }],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                strip_index_format: None,
-                polygon_mode: wgpu::PolygonMode::Fill,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-        }));
-
-        render_pass.draw(0..3, 0..1);
     }
 
-    queue.submit(Some(encoder.finish()));
-}
