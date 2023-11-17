@@ -1,8 +1,14 @@
 use image::{ImageBuffer, Rgba};
-use std::f32::consts::FRAC_PI_4;
+use nalgebra as na;
+use wgpu::{Device, Queue, SwapChain, SwapChainDescriptor, Texture, TextureUsage, TextureView};
+use winit::{
+    event::{DeviceEvent, ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+    event_loop::{ControlFlow, EventLoop},
+    window::{Window, WindowBuilder},
+};
 
-const WIDTH: u32 = 80;
-const HEIGHT: u32 = 60;
+const WIDTH: u32 = 800;
+const HEIGHT: u32 = 600;
 
 #[derive(Clone, Copy)]
 struct Vec3 {
@@ -26,60 +32,128 @@ impl Triangle {
 }
 
 fn main() {
-    let mut img = ImageBuffer::new(WIDTH, HEIGHT);
+    let event_loop = EventLoop::new();
+    let window = WindowBuilder::new()
+        .with_title("Interactive Triangle Rotation")
+        .with_inner_size(winit::dpi::LogicalSize::new(WIDTH as f64, HEIGHT as f64))
+        .build(&event_loop)
+        .unwrap();
 
-    // Define a pyramid with larger coordinates
-    let pyramid = vec![
-        // Base (blue)
-        Triangle::new(
-            Vec3 { x: -1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 1.0, y: 1.0, z: -5.0 },
-            Rgba([0, 0, 255, 255]),
-        ),
-        Triangle::new(
-            Vec3 { x: -1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 1.0, y: 1.0, z: -5.0 },
-            Vec3 { x: -1.0, y: 1.0, z: -5.0 },
-            Rgba([0, 0, 255, 255]),
-        ),
-        // Front face (red)
-        Triangle::new(
-            Vec3 { x: -1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 0.0, y: 0.0, z: -7.0 },
-            Rgba([255, 0, 0, 255]),
-        ),
-        // Right face (green)
-        Triangle::new(
-            Vec3 { x: 1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: 1.0, y: 1.0, z: -5.0 },
-            Vec3 { x: 0.0, y: 0.0, z: -7.0 },
-            Rgba([0, 255, 0, 255]),
-        ),
-        // Left face (yellow)
-        Triangle::new(
-            Vec3 { x: -1.0, y: -1.0, z: -5.0 },
-            Vec3 { x: -1.0, y: 1.0, z: -5.0 },
-            Vec3 { x: 0.0, y: 0.0, z: -7.0 },
-            Rgba([255, 255, 0, 255]),
-        ),
-    ];
+    let instance = wgpu::Instance::new(wgpu::BackendBit::PRIMARY);
+    let (device, queue) = futures::executor::block_on(async {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::Default,
+                compatible_surface: None,
+            })
+            .await
+            .unwrap();
+        adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    features: wgpu::Features::empty(),
+                    limits: wgpu::Limits::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap()
+    });
 
-    let rotation_angle = FRAC_PI_4 / 7.0; // 11.25 degrees
+    let swap_chain_descriptor = SwapChainDescriptor {
+        usage: TextureUsage::RENDER_ATTACHMENT,
+        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+        width: WIDTH,
+        height: HEIGHT,
+        present_mode: wgpu::PresentMode::Mailbox,
+    };
+    let swap_chain = device.create_swap_chain(&window, &swap_chain_descriptor);
 
-    for i in (0..360).step_by(10) {
-        for triangle in pyramid.iter() {
-            let rotated_triangle = rotate_triangle(&triangle, rotation_angle * (i as f32).to_radians());
-            rasterize_triangle(&mut img, &rotated_triangle);
+    let mut rotation_angle = 0.0;
+
+    event_loop.run(move |event, _, control_flow| {
+        *control_flow = ControlFlow::Poll;
+
+        match event {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
+                *control_flow = ControlFlow::Exit;
+            }
+            Event::DeviceEvent {
+                event:
+                DeviceEvent::Key(KeyboardInput {
+                                     state,
+                                     virtual_keycode: Some(VirtualKeyCode::Escape),
+                                     ..
+                                 }),
+                ..
+            }
+            | Event::WindowEvent {
+                event:
+                WindowEvent::KeyboardInput {
+                    input:
+                    KeyboardInput {
+                        state,
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        ..
+                    },
+                    ..
+                },
+                ..
+            } => {
+                if *state == ElementState::Pressed {
+                    *control_flow = ControlFlow::Exit;
+                }
+            }
+            Event::DeviceEvent {
+                event:
+                DeviceEvent::MouseWheel {
+                    delta,
+                    phase,
+                    ..
+                },
+                ..
+            } => {
+                if let winit::event::MouseScrollDelta::LineDelta(_, y) = delta {
+                    if *phase == winit::event::TouchPhase::Moved {
+                        rotation_angle += y;
+                        let rotated_triangle = rotate_triangle(rotation_angle);
+                        render(&device, &queue, &swap_chain, &rotated_triangle);
+                    }
+                }
+            }
+            Event::RedrawRequested(_) => {
+                let rotated_triangle = rotate_triangle(rotation_angle);
+                render(&device, &queue, &swap_chain, &rotated_triangle);
+            }
+            _ => (),
         }
-
-        let filename = format!("output_{:03}.png", i);
-        img.save(filename).unwrap();
-    }
+    });
 }
 
-fn rotate_triangle(triangle: &Triangle, angle: f32) -> Triangle {
+fn rotate_triangle(angle: f32) -> Triangle {
+    let triangle = Triangle::new(
+        Vec3 {
+            x: -0.5,
+            y: -0.5,
+            z: 0.0,
+        },
+        Vec3 {
+            x: 0.5,
+            y: -0.5,
+            z: 0.0,
+        },
+        Vec3 {
+            x: 0.0,
+            y: 0.5,
+            z: 0.0,
+        },
+        Rgba([255, 0, 0, 255]),
+    );
+
     let mut rotated_vertices = triangle.vertices;
 
     for vertex in rotated_vertices.iter_mut() {
@@ -95,37 +169,82 @@ fn rotate_triangle(triangle: &Triangle, angle: f32) -> Triangle {
     }
 }
 
-fn rasterize_triangle(img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, triangle: &Triangle) {
-    for x in 0..WIDTH {
-        for y in 0..HEIGHT {
-            let p = Vec3 {
-                x: x as f32 / WIDTH as f32 * 2.0 - 1.0,
-                y: 1.0 - y as f32 / HEIGHT as f32 * 2.0,
-                z: 0.0,
-            };
+fn render(device: &Device, queue: &Queue, swap_chain: &SwapChain, triangle: &Triangle) {
+    let frame = swap_chain.get_next_texture().unwrap();
+    let output = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            let barycentric = barycentric_coords(p, triangle);
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-            if barycentric.x >= 0.0 && barycentric.y >= 0.0 && barycentric.z >= 0.0 {
-                img.put_pixel(x, y, triangle.color);
-            }
-        }
+    {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[wgpu::RenderPassColorAttachment {
+                view: &output,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: true,
+                },
+            }],
+            depth_stencil_attachment: None,
+        });
+
+        // Render the triangle
+        let vertices: Vec<[f32; 3]> = triangle
+            .vertices
+            .iter()
+            .map(|v| [v.x, v.y, v.z])
+            .collect();
+        render_pass.set_vertex_buffer(0, device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsage::VERTEX,
+        }));
+
+        render_pass.set_pipeline(&device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                    label: Some("Vertex Shader"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("vertex_shader.wgsl").into()),
+                    flags: wgpu::ShaderFlags::empty(),
+                }),
+                entry_point: "main",
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                    label: Some("Fragment Shader"),
+                    source: wgpu::ShaderSource::Wgsl(include_str!("fragment_shader.wgsl").into()),
+                    flags: wgpu::ShaderFlags::empty(),
+                }),
+                entry_point: "main",
+                targets: &[wgpu::ColorTargetState {
+                    format: swap_chain_descriptor.format,
+                    alpha_blend: wgpu::BlendState::REPLACE,
+                    color_blend: wgpu::BlendState::REPLACE,
+                    write_mask: wgpu::ColorWrite::ALL,
+                }],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                strip_index_format: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+        }));
+
+        render_pass.draw(0..3, 0..1);
     }
-}
 
-fn barycentric_coords(p: Vec3, triangle: &Triangle) -> Vec3 {
-    let v0 = triangle.vertices[0];
-    let v1 = triangle.vertices[1];
-    let v2 = triangle.vertices[2];
-
-    let det_t = (v1.y - v2.y) * (v0.x - v2.x) + (v2.x - v1.x) * (v0.y - v2.y);
-    let alpha = ((v1.y - v2.y) * (p.x - v2.x) + (v2.x - v1.x) * (p.y - v2.y)) / det_t;
-    let beta = ((v2.y - v0.y) * (p.x - v2.x) + (v0.x - v2.x) * (p.y - v2.y)) / det_t;
-    let gamma = 1.0 - alpha - beta;
-
-    Vec3 {
-        x: alpha,
-        y: beta,
-        z: gamma,
-    }
+    queue.submit(Some(encoder.finish()));
 }
