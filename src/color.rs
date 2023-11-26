@@ -68,6 +68,3 @@ impl Add for Color {
 }
 
 // Function to write a Color instance to a given output stream
-pub fn write_color<W: std::io::Write>(output: &mut W, color: Color) -> std::io::Result<()> {
-    writeln!(output, "{}", color)
-}

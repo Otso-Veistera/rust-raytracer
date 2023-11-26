@@ -15,14 +15,7 @@ impl HittableList {
     }
 
     // Clear the list of hittable objects
-    pub fn clear(&mut self) {
-        self.objects.clear();
-    }
 
-    // Add a hittable object to the list
-    pub fn add(&mut self, object: Box<dyn Hittable>) {
-        self.objects.push(object);
-    }
 }
 
 // Implement the Hittable trait for HittableList
