@@ -1,242 +1,179 @@
-// Importing necessary libraries
-use minifb::{Key, Window, WindowOptions};
-use std::convert::TryInto;
+// Import necessary modules and libraries
+use std::io;
+use minifb::{Key, Window, WindowOptions, MouseButton, MouseMode};
 
-// Struct representing a 3D vector
-#[derive(Clone, Copy)]
-struct Vec3 {
-    x: f64,
-    y: f64,
-    z: f64,
-}
+// Import custom modules and types
+mod color;
+mod hittable;
+mod hittable_list;
+mod ray;
+mod sphere;
+mod vec3;
 
-impl Vec3 {
-    // Constructor for Vec3
-    fn new(x: f64, y: f64, z: f64) -> Vec3 {
-        Vec3 { x, y, z }
-    }
+use color::Color;
+use hittable::{HitRecord, Hittable};
+use hittable_list::HittableList;
+use ray::Ray;
+use sphere::Sphere;
+use vec3::Vec3;
 
-    // Returns the unit vector of the current vector
-    fn unit_vector(&self) -> Vec3 {
-        *self / self.length()
-    }
+// Function to calculate the color of a ray in the scene
+fn ray_color(r: &Ray, world: &impl Hittable) -> Color {
+    // Initialize a hit record with default values
+    let mut rec = HitRecord::default();
 
-    // Returns the length of the vector
-    fn length(&self) -> f64 {
-        self.squared_length().sqrt()
-    }
-
-    // Returns the squared length of the vector
-    fn squared_length(&self) -> f64 {
-        self.x * self.x + self.y * self.y + self.z * self.z
-    }
-
-    // Returns the dot product of the vector with another vector
-    fn dot(&self, rhs: Vec3) -> f64 {
-        self.x * rhs.x + self.y * rhs.y + self.z * rhs.z
+    // Check if the ray hits any object in the scene
+    if world.hit(r, 0.0, f64::INFINITY, &mut rec) {
+        // Calculate the color based on the surface normal
+        0.5 * Color::new(rec.normal.x + 1.0, rec.normal.y + 1.0, rec.normal.z + 1.0)
+    } else {
+        // If the ray doesn't hit any object, calculate background color based on ray direction
+        let unit_direction = r.direction().normalized();
+        let t = 0.5 * (unit_direction.y() + 1.0);
+        (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
     }
 }
 
-// Overloading operators for Vec3
-impl std::ops::Add for Vec3 {
-    type Output = Vec3;
-
-    fn add(self, rhs: Vec3) -> Vec3 {
-        Vec3 {
-            x: self.x + rhs.x,
-            y: self.y + rhs.y,
-            z: self.z + rhs.z,
-        }
-    }
-}
-
-impl std::ops::Sub for Vec3 {
-    type Output = Vec3;
-
-    fn sub(self, rhs: Vec3) -> Vec3 {
-        Vec3 {
-            x: self.x - rhs.x,
-            y: self.y - rhs.y,
-            z: self.z - rhs.z,
-        }
-    }
-}
-
-impl std::ops::Mul<f64> for Vec3 {
-    type Output = Vec3;
-
-    fn mul(self, t: f64) -> Vec3 {
-        Vec3 {
-            x: self.x * t,
-            y: self.y * t,
-            z: self.z * t,
-        }
-    }
-}
-
-impl std::ops::Mul<Vec3> for f64 {
-    type Output = Vec3;
-
-    fn mul(self, vec: Vec3) -> Vec3 {
-        Vec3 {
-            x: self * vec.x,
-            y: self * vec.y,
-            z: self * vec.z,
-        }
-    }
-}
-
-impl std::ops::Div<f64> for Vec3 {
-    type Output = Vec3;
-
-    fn div(self, t: f64) -> Vec3 {
-        (1.0 / t) * self
-    }
-}
-
-// Struct representing a Ray in 3D space
-#[derive(Clone, Copy)]
-struct Ray {
-    origin: Vec3,
-    direction: Vec3,
-}
-
-impl Ray {
-    // Constructor for Ray
-    fn new(origin: Vec3, direction: Vec3) -> Ray {
-        Ray { origin, direction }
-    }
-
-    // Returns the point along the ray at a given parameter t
-    fn at(&self, t: f64) -> Vec3 {
-        self.origin + t * self.direction
-    }
-}
-
-// Struct representing a Sphere in 3D space
-#[derive(Clone, Copy)]
-struct Sphere {
-    center: Vec3,
-    radius: f64,
-}
-
-impl Sphere {
-    // Checks if the given ray intersects with the sphere, returns the intersection parameter if it does
-    fn hit(&self, ray: &Ray) -> Option<f64> {
-        let oc = ray.origin - self.center;
-        let a = ray.direction.squared_length();
-        let b = 2.0 * oc.dot(ray.direction);
-        let c = oc.squared_length() - self.radius * self.radius;
-        let discriminant = b * b - 4.0 * a * c;
-
-        if discriminant > 0.0 {
-            // Ray hits the sphere
-            let t1 = (-b - discriminant.sqrt()) / (2.0 * a);
-            let t2 = (-b + discriminant.sqrt()) / (2.0 * a);
-            if t1 > 0.0 || t2 > 0.0 {
-                // Return the minimum positive solution
-                Some(t1.min(t2))
-            } else {
-                // Both solutions are negative
-                None
-            }
-        } else {
-            // Ray does not hit the sphere
-            None
-        }
-    }
-}
-
-// Finds the closest intersection between a ray and a list of spheres
-fn hit_sphere<'a>(world: &'a [Sphere], ray: &'a Ray) -> Option<(f64, &'a Sphere)> {
-    let mut closest_t = f64::INFINITY;
-    let mut hit_sphere: Option<&'a Sphere> = None;
-
-    for sphere in world {
-        if let Some(t) = sphere.hit(ray) {
-            if t < closest_t {
-                closest_t = t;
-                hit_sphere = Some(sphere);
-            }
-        }
-    }
-
-    hit_sphere.map(|sphere| (closest_t, sphere))
-}
-
-// Computes the color of a ray, taking into account intersections with spheres in the world
-fn ray_color(ray: &Ray, world: &[Sphere]) -> Vec3 {
-    if let Some((t, sphere)) = hit_sphere(world, ray) {
-        let hit_point = ray.at(t);
-        let normal = Vec3::unit_vector(&(hit_point - sphere.center));
-        return 0.5 * (normal + Vec3::new(1.0, 1.0, 1.0));
-    }
-
-    // Background color if no intersection
-    Vec3::new(0.0, 0.0, 0.0)
-}
-
-fn main() {
-    // Image dimensions
+// Main function
+fn main() -> io::Result<()> {
+    // Image dimensions and aspect ratio
+    let aspect_ratio = 16.0 / 9.0;
     let image_width = 800;
-    let image_height = 400;
+    let image_height = (image_width as f64 / aspect_ratio) as u32;
 
-    // Creating a window using the minifb library
+    // Create a window using the minifb library
     let mut window = Window::new(
         "Ray Tracing",
         image_width.try_into().unwrap(),
         image_height.try_into().unwrap(),
         WindowOptions {
-            scale: minifb::Scale::X1, // Set zoom to 1x
+            scale: minifb::Scale::X1,  // Set the window scale to 1x
             ..WindowOptions::default()
         },
     )
-    .expect("Failed to create window");
+        .expect("Failed to create window");
 
     // Buffer to store pixel values for the window
-    let mut buffer: Vec<u32> = vec![0; image_width * image_height];
+    let mut buffer: Vec<u32> = vec![0; image_width as usize * image_height as usize];
 
     // Camera and scene setup
-    let lower_left_corner = Vec3::new(-2.0, -1.0, -1.0);
-    let horizontal = Vec3::new(4.0, 0.0, 0.0);
-    let vertical = Vec3::new(0.0, 2.0, 0.0);
-    let origin = Vec3::new(0.0, 0.0, 0.0);
+    let aspect_ratio = image_width as f64 / image_height as f64;
+    let viewport_height = 2.0;
+    let viewport_width = aspect_ratio * viewport_height;
 
-    // List of spheres in the scene
-    let world = vec![
-        Sphere {
-            center: Vec3::new(0.0, 0.0, -1.0),
-            radius: 0.5,
-        },
-        Sphere {
-            center: Vec3::new(0.0, -100.5, -1.0),
-            radius: 100.0,
-        },
-    ];
+    let mut pitch: f64 = 1.0;
+    let mut yaw: f64 = 5.0;
+    let mut focal_length = 1.0;
+
+    let mut origin = Vec3::new(0.0, 0.0, 0.0);
+
+    // World setup with a list of spheres
+    let world = HittableList::new(vec![
+        Box::new(Sphere::new(Vec3::new(0.0, 1.0, 0.0), 0.5)),
+        Box::new(Sphere::new(Vec3::new(1.0, 1.0, 0.0), 0.4)),  // Ground sphere
+        // Add other objects as needed
+    ]);
+
+    // Camera speed and rotation speed
+    let camera_speed = 0.1;
+    let rotation_speed = 0.02;
+
+    // Mouse input variables
+    let mut prev_mouse_pos = (0.0, 0.0);
+    let mut mouse_pressed = false;
 
     // Rendering loop
     while window.is_open() {
+        // Handle camera movement using arrow keys
+        if window.is_key_down(Key::W) {
+            origin.x += camera_speed;
+        }
+        if window.is_key_down(Key::S) {
+            origin.x -= camera_speed;
+        }
+        if window.is_key_down(Key::A) {
+            origin.z -= camera_speed;
+        }
+        if window.is_key_down(Key::D) {
+            origin.z += camera_speed;
+        }
+
+        // Adjust focal length using keys
+        if window.is_key_down(Key::E) {
+            origin.y += camera_speed;
+        }
+        if window.is_key_down(Key::Q) {
+            origin.y -= camera_speed;
+        }
+
+        // Handle camera rotation using mouse
+        if window.get_mouse_down(MouseButton::Left) {
+            let mouse_pos = window.get_mouse_pos(MouseMode::Pass).unwrap_or((0.0, 0.0));
+
+            if !mouse_pressed {
+                prev_mouse_pos = mouse_pos;
+                mouse_pressed = true;
+            }
+
+            let delta_x = mouse_pos.0 - prev_mouse_pos.0;
+            let delta_y = mouse_pos.1 - prev_mouse_pos.1;
+
+            yaw += rotation_speed as f64 * delta_x as f64;
+            pitch += rotation_speed as f64 * delta_y as f64;
+
+            // Clamp pitch to avoid flipping
+            pitch = pitch.clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+            yaw = yaw.clamp(0.0, 2.0 * std::f64::consts::PI);
+
+            prev_mouse_pos = mouse_pos;
+        } else {
+            mouse_pressed = false;
+        }
+
+        // Handle zooming using mouse scroll
+        if let Some((_scroll_x, scroll_y)) = window.get_scroll_wheel() {
+            focal_length -= scroll_y as f64 * 0.1;
+        }
+
+        // Calculate the new direction based on pitch and yaw
+        let direction = Vec3::new(
+            yaw.cos() * pitch.cos(),
+            pitch.sin(),
+            yaw.sin() * pitch.cos(),
+        )
+            .normalized();
+
+        // Update horizontal and vertical vectors based on the new direction
+        let right = direction.cross(Vec3::new(0.0, 1.0, 0.0)).normalized();
+        let up = right.cross(direction).normalized();
+
+        // Update the camera's horizontal and vertical vectors
+        let horizontal = right * viewport_width;
+        let vertical = up * viewport_height;
+
+        // Rendering
         for j in 0..image_height {
             for i in 0..image_width {
-                let index = j * image_width + i;
+                let index = j as usize * image_width as usize + i as usize;
+
                 let u = i as f64 / (image_width - 1) as f64;
                 let v = j as f64 / (image_height - 1) as f64;
 
-                // Generate a ray for the current pixel
                 let ray = Ray::new(
                     origin,
-                    lower_left_corner + u * horizontal + v * vertical - origin,
+                    horizontal * u + vertical * v - Vec3::new(0.0, 0.0, focal_length),
                 );
 
-                // Compute the color of the ray and store it in the buffer
+                // Calculate color for the pixel using the ray
                 let color = ray_color(&ray, &world);
 
-                // Convert color components to u8 and store in the buffer
-                let ir = (255.999 * color.x) as u8;
-                let ig = (255.999 * color.y) as u8;
-                let ib = (255.999 * color.z) as u8;
+                // Convert color components to u32 values
+                let ir = color.r as u32;
+                let ig = color.g as u32;
+                let ib = color.b as u32;
 
-                buffer[index] = (ir as u32) << 16 | (ig as u32) << 8 | ib as u32;
+                // Combine color components into a single u32 value and store in the buffer
+                buffer[index] = (ir << 16) | (ig << 8) | ib;
             }
         }
 
@@ -254,4 +191,6 @@ fn main() {
             break;
         }
     }
+
+    Ok(())
 }
