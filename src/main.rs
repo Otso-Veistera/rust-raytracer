@@ -30,7 +30,7 @@ fn ray_color(r: &Ray, world: &impl Hittable) -> Color {
         // If the ray doesn't hit any object, calculate background color based on ray direction
         let unit_direction = r.direction().normalized();
         let t = 0.5 * (unit_direction.y() + 1.0);
-        (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
+        return (1.0 - t) * Color::new(1.0, 1.0, 1.0) + t * Color::new(0.5, 0.7, 1.0)
     }
 }
 
@@ -38,7 +38,7 @@ fn ray_color(r: &Ray, world: &impl Hittable) -> Color {
 fn main() -> io::Result<()> {
     // Image dimensions and aspect ratio
     let aspect_ratio = 16.0 / 9.0;
-    let image_width = 800;
+    let image_width = 500;
     let image_height = (image_width as f64 / aspect_ratio) as u32;
 
     // Create a window using the minifb library
@@ -47,7 +47,7 @@ fn main() -> io::Result<()> {
         image_width.try_into().unwrap(),
         image_height.try_into().unwrap(),
         WindowOptions {
-            scale: minifb::Scale::X1,  // Set the window scale to 1x
+            scale: minifb::Scale::X2,  // Set the window scale to 2x
             ..WindowOptions::default()
         },
     )
@@ -100,10 +100,10 @@ fn main() -> io::Result<()> {
 
         // Adjust focal length using keys
         if window.is_key_down(Key::E) {
-            origin.y += camera_speed;
+            origin.y -= camera_speed;
         }
         if window.is_key_down(Key::Q) {
-            origin.y -= camera_speed;
+            origin.y += camera_speed;
         }
 
         // Handle camera rotation using mouse
@@ -153,16 +153,18 @@ fn main() -> io::Result<()> {
 
         // Rendering
         for j in 0..image_height {
-            for i in 0..image_width {
+            for i in 0..image_width {   //Iterate over each pixel
                 let index = j as usize * image_width as usize + i as usize;
 
-                let u = i as f64 / (image_width - 1) as f64;
-                let v = j as f64 / (image_height - 1) as f64;
+                let u = i as f64 / (image_width - 1) as f64; // Value between 0.0-1.0 representing how far along horizontally we are
+                let v = j as f64 / (image_height - 1) as f64; // Same for vertical
 
                 let ray = Ray::new(
                     origin,
                     horizontal * u + vertical * v - Vec3::new(0.0, 0.0, focal_length),
                 );
+
+
 
                 // Calculate color for the pixel using the ray
                 let color = ray_color(&ray, &world);
